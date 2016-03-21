@@ -1,0 +1,397 @@
+---
+title: "Data Science Capstone Milestone Report"
+author: "Patrick Siu"
+date: "March 14, 2016"
+output: html_document
+---
+
+
+```{r library, echo = FALSE, message=FALSE, warning = FALSE}
+library(tm)
+library(DT)
+library(dplyr)
+library(stringi)
+library(RWeka)
+library(SnowballC)
+library(wordcloud)
+library(RColorBrewer)
+library(ggplot2)
+
+options(scipen=999)
+
+
+#############################
+## Constants and controls
+rawDataFile <- "Coursera-SwiftKey.zip"
+downloadURL <- "https://d396qusza40orc.cloudfront.net/dsscapstone/dataset/Coursera-SwiftKey.zip"
+
+
+#############################
+## Helper functions
+
+loadRawData <- function() {
+    ## If raw data file does ont exist, download the data file
+    if(!file.exists(rawDataFile)){
+        download.file(downloadURL, rawDataFile)
+    }
+}
+    
+#Returns the number of characters in the longest line
+longest_line_nchars <- function(df) {
+    ans <- max(nchar(df))
+    return(ans)
+}
+
+#Returns the average number of characters
+avg_nchars <- function(df) {
+    ans <- mean(nchar(df))
+    return( round(ans) )
+}
+    
+```
+
+#Introduction
+
+Created for the Coursera Data Science Specialization, this milestone report explains the latest exploratory analysis for the SwiftKey project - where the final deliverable will be an interactive text prediction app.
+
+The code has been suppressed to maintain readability of this document.  If you are interested in the underlying code, please visit this link:
+
+
+```{r acquire_data, echo = FALSE, eval=FALSE}
+    
+loadRawData()  
+    
+# Raw file is 548 MB
+unzip(rawDataFile)
+```
+
+```{r load_data, echo = FALSE, warning=FALSE, cache=TRUE}
+blog_file <- "final/en_US/en_US.blogs.txt"
+news_file <- "final/en_US/en_US.news.txt"
+twitter_file <- "final/en_US/en_US.twitter.txt"
+
+blog_data <- readLines(blog_file, skipNul = TRUE, encoding = "UTF-8") #UTF-8 helps with reading special characters which would show up as "â€\u009d" otherwise
+news_data <- readLines(news_file, skipNul = TRUE, encoding = "UTF-8")
+twitter_data <- readLines(twitter_file, skipNul = TRUE, encoding = "UTF-8")
+
+```
+
+#File Basic Summaries
+
+```{r basic, echo=FALSE, cache=FALSE}
+#File sizes in MB:
+blog_file_size <- round(file.info(blog_file)$size / 1024^2)
+news_file_size <- round(file.info(news_file)$size / 1024^2)
+twitter_file_size <- round(file.info(twitter_file)$size / 1024^2)
+
+blog_num_lines <- length(blog_data)
+news_num_lines <- length(news_data)
+twitter_num_lines <- length(twitter_data)
+
+blog_max_nchars <- longest_line_nchars(blog_data)
+news_max_nchars <- longest_line_nchars(news_data)
+twitter_max_nchars <- longest_line_nchars(twitter_data)
+
+blog_avg_nchars <- avg_nchars(blog_data)
+news_avg_nchars <- avg_nchars(news_data)
+twitter_avg_nchars <- avg_nchars(twitter_data)
+
+
+### Helper function specific to this data frame
+add_frame <- function(df, m1, m2, m3, m4, m5) {
+
+    additional <- data.frame(File_Name = m1,
+                    File_Size_MB = m2,
+                    Number_of_lines = m3,
+                    Characters_in_longest_line = m4,
+                    Average_characters = m5,
+                    stringsAsFactors = FALSE
+                    )
+    df <- rbind(df, additional)
+    return(df)
+}
+
+frame <- add_frame(NULL, "Blog", blog_file_size, blog_num_lines, blog_max_nchars, blog_avg_nchars)
+frame <- add_frame(frame, "News", news_file_size, news_num_lines, news_max_nchars, news_avg_nchars)
+frame <- add_frame(frame, "Twitter", twitter_file_size, twitter_num_lines, twitter_max_nchars, twitter_avg_nchars)
+
+#Show the table output
+datatable(frame, options = list(dom = 't'))
+```
+
+Note that there are extremely long articles in the blog data set.  Whereas the Twitter data set consists of a large quantity of short entries.
+
+```{r heads, echo=FALSE}
+#viewing longest entries
+#blog_data[nchar(blog_data) == max(nchar(blog_data)) ]
+# Fukushima nuclear reactor incident
+#news_data[nchar(news_data) == max(nchar(news_data)) ]
+# Stock data
+#twitter_data[nchar(twitter_data) == max(nchar(twitter_data)) ]
+# A lot of garbage characters but still relevant when cleaned up
+```
+
+#Sample text from each data set
+
+####Blog file
+
+* `r blog_data[1]`
+
+* `r blog_data[2]`
+
+* `r blog_data[3]`
+
+####News file
+
+* `r news_data[1]`
+
+* `r news_data[2]`
+
+* `r news_data[3]`
+
+####Twitter file
+
+* `r twitter_data[1]`
+
+* `r twitter_data[2]`
+
+* `r twitter_data[3]`
+
+#Boxplot of character frequency in each data set
+
+```{r hist_nchar, echo=FALSE, cache=TRUE, fig.width=10, fig.height=4}
+
+par( mfrow = c( 1, 3 ) )
+
+limit <- c(0,400)
+
+blog_dist <- nchar(blog_data)
+boxplot(blog_dist, ylim = limit, main = "Blogs", ylab = "Number of Characters")
+
+news_dist <- nchar(news_data)
+boxplot(news_dist, ylim = limit, main = "News", ylab = "Number of Characters")
+
+twitter_dist <- nchar(twitter_data)
+boxplot(twitter_dist, ylim = limit, main = "Twitter", ylab = "Number of Characters")
+
+# Reset to default
+par( mfrow = c( 1, 1 ) )
+
+```
+
+# Data Cleaning
+
+We can see from the initial exploratory analysis that there are some outliers with extremely long articles.  When examining those outliers, we have observations such as a log of events from the Fukushima nuclear reactor incident and a log of stock prices.  Likewise, outliers on the short side are also unlikely occurences.  Neither of these extremes relate well to the type of text that we want to predict.  For this reason **we will limit the data sets to the 1st and 3rd quartile**.
+
+```{r data_cleaning, echo=FALSE, cache=TRUE}
+
+remove_outliers <- function(data) {
+    first <- quantile(nchar(data), .25)
+    third <- quantile(nchar(data), .75)
+    data <- data[nchar(data) < third]
+    data <- data[nchar(data) > first]
+    return(data)
+}
+
+blog_data <- remove_outliers(blog_data)
+news_data <- remove_outliers(news_data)
+twitter_data <- remove_outliers(twitter_data)
+
+```
+
+We will merge the data sets into one file.  Initially, the intention was to split the data set to 60% training and 40% test.  However, the data set is way too large to process on a single computer.  A full corpus on the blog data set alone will take 3.4 GB of RAM and this is before performing any transformations which take an exponential amount of resources.  Given that we are looking to run this as a speed efficient app over the web, reducing the data set will increase efficiency.
+**For this report, we will limit the data set to 30k observations.**
+
+```{r merge, echo=FALSE, cache=TRUE}
+
+big_corpus <- c(blog_data, news_data, twitter_data) #1.6M obs, 262 MB
+
+#60% Training set size
+# p <- 0.6
+# training_sample_size <- round(length(big_corpus) * p)
+
+#Sample size too large to process, reducing to 30,000
+training_sample_size <- 30000
+
+set.seed(113)  # Reproducibility
+inTrain <- sample(1:length(big_corpus), training_sample_size, replace=FALSE)
+    
+training <- big_corpus[inTrain]
+#testing <- big_corpus[-inTrain]
+#length(training)
+#length(testing)
+
+big_corpus <- training
+
+#Remove special characters
+scrub_special_char <- function(x) iconv(x, to="ASCII", sub="?")
+big_corpus <- scrub_special_char(big_corpus)
+
+big_corpus <- Corpus(VectorSource(big_corpus))  #1.6GB RAM previous, 300k data set yields 1.1GB, 100k data set yields 370MB
+
+```
+
+
+**We will clean the data by removing punctuation and removing profanity**.  Ideally, spelling correction and removing non-English words would be helpful, but out-of-scope for this phase of the milestone report.  For the most part, spelling errors and non-English words appear to be edge cases when considering the top ngrams only.
+
+**The stemwords were left alone because they are possible candidates for next word prediction.**
+
+
+```{r corpus_clean, echo=FALSE, warning=FALSE}
+
+#Profanity file for match for text cleaning
+profanity <- readLines("profanity.txt")
+
+cleanCorpus <- function(corpus) {
+    corpus.tmp <- tm_map(corpus, function(x) stri_replace_all_fixed(x, "\n", " "))
+    #corpus.tmp <- tm_map(corpus.tmp, content_transformer(scrub_special_char))
+    corpus.tmp <- tm_map(corpus.tmp, PlainTextDocument)
+    corpus.tmp <- tm_map(corpus.tmp, stripWhitespace)
+    corpus.tmp <- tm_map(corpus.tmp, removePunctuation)
+    corpus.tmp <- tm_map(corpus.tmp, tolower)
+    corpus.tmp <- tm_map(corpus.tmp, removeNumbers)
+    corpus.tmp <- tm_map(corpus.tmp, removeWords, profanity)
+#    corpus.tmp <- tm_map(corpus.tmp, removeWords, not_english)
+#     myStopwords <- c(stopwords('english'))
+#     idx <- which(myStopwords == "for")  # words to exclude
+#     myStopwords <- myStopwords[-idx]
+#    corpus.tmp <- tm_map(corpus.tmp, removeWords, myStopwords)
+#   corpus.tmp <- tm_map(corpus.tmp, stemDocument)
+    corpus.tmp <- tm_map(corpus.tmp, PlainTextDocument)
+    return(corpus.tmp)
+}
+```
+
+```{r corpus_clean2, echo=FALSE, cache=TRUE}
+big_corpus <- cleanCorpus(big_corpus)
+
+saveRDS(big_corpus, "big_corpus.rds")
+```
+
+####Sample text of clean output
+
+```{r corpus_check, echo=FALSE}
+# Check to see the text
+content(big_corpus[[1]])
+```
+
+
+```{r ngrams_old, echo=FALSE, cache = FALSE}
+#Deprecated - too expensive to process
+
+# UnigramTokenizer <- function(x) NGramTokenizer(x, Weka_control(min = 1, max = 1))
+# BigramTokenizer <- function(x) NGramTokenizer(x, Weka_control(min = 2, max = 2))
+# TrigramTokenizer <- function(x) NGramTokenizer(x, Weka_control(min = 3, max = 3))
+# 
+# tdm1 <- TermDocumentMatrix(big_corpus, control = list(minWordLength = 1, tokenize = UnigramTokenizer))
+# tdm2 <- TermDocumentMatrix(big_corpus, control = list(minWordLength = 1, tokenize = BigramTokenizer))
+# tdm3 <- TermDocumentMatrix(big_corpus, control = list(minWordLength = 1, tokenize = TrigramTokenizer))
+```
+
+```{r corpus_to_text, echo=FALSE}
+### Convert back to character
+corpus_df <- data.frame(text = unlist(sapply(big_corpus, `[`, "content")), stringsAsFactors=F)
+```
+
+```{r ngrams, echo=FALSE, cache = TRUE}
+
+UnigramTokenizer <- function(x) NGramTokenizer(x, Weka_control(min = 1, max = 1))
+BigramTokenizer <- function(x) NGramTokenizer(x, Weka_control(min = 2, max = 2))
+TrigramTokenizer <- function(x) NGramTokenizer(x, Weka_control(min = 3, max = 3))
+
+tdm1 <- UnigramTokenizer(corpus_df)
+tdm2 <- BigramTokenizer(corpus_df)
+tdm3 <- TrigramTokenizer(corpus_df)
+
+tdm_freq <- function(tdm) {
+    tdm <- data.frame(table(tdm))
+    colnames(tdm) <- c("token", "n")
+    tdm <- tdm[order(tdm$n, decreasing = TRUE),]
+    return(tdm)  
+}
+
+freq1 <- tdm_freq(tdm1)
+freq2 <- tdm_freq(tdm2)
+freq3 <- tdm_freq(tdm3)
+```
+
+```{r save_tdm, echo=FALSE, cache=FALSE}
+saveRDS(tdm1, "tdm1.rds")
+saveRDS(tdm2, "tdm2.rds")
+saveRDS(tdm3, "tdm3.rds")
+```
+
+```{r freq_counts, echo=FALSE}
+#Generate frequency counts
+
+# tdm_freq <- function(tdm) {
+#     tdm_matrix <- as.matrix(tdm)
+#     frequency <- rowSums(tdm_matrix)
+#     frequency <- sort(frequency, decreasing=TRUE)
+#     return(frequency)  
+# }
+# 
+# freq1 <- tdm_freq(tdm1)
+# freq2 <- tdm_freq(tdm2)
+# freq3 <- tdm_freq(tdm3)
+
+freq1$token <- factor(freq1$token, levels = freq1$token[order(freq1$n, decreasing=TRUE)])
+freq2$token <- factor(freq2$token, levels = freq2$token[order(freq2$n, decreasing=TRUE)])
+freq3$token <- factor(freq3$token, levels = freq3$token[order(freq3$n, decreasing=TRUE)])
+
+saveRDS(freq1, "freq1.rds")
+saveRDS(freq2, "freq2.rds")
+saveRDS(freq3, "freq3.rds")
+```
+
+#Plotting the frequency of the top 10 ngrams
+
+```{r viz_freq, echo=FALSE, fig.width=10, fig.height=2}
+ggplot(freq1[1:10,], aes(x= token, y = n)) +
+    geom_bar(stat="identity") +
+    labs(title= "Unigrams", y= "Count", x="ngram")
+
+ggplot(freq2[1:10,], aes(x= token, y = n)) +
+    geom_bar(stat="identity") +
+    labs(title= "Bigrams", y = "Count", x="ngram")
+
+ggplot(freq3[1:10,], aes(x= token, y = n)) +
+    geom_bar(stat="identity") +
+    labs(title= "Trigrams", y = "Count", x="ngram")
+
+
+#findFreqTerms(tdm, lowfreq=10)
+#Terms(tdm)
+```
+
+#Word cloud visualization
+
+Word clouds show the most frequent words in the data set
+
+```{r wordcloud, echo=FALSE, fig.width=10, warning = FALSE}
+
+set.seed(113)
+wcloud_frame <- data.frame(word = freq1$token, freq = freq1$n)
+wordcloud(wcloud_frame$word, wcloud_frame$freq, c(5, 1), min.freq = 90, random.order=FALSE, colors = brewer.pal(8, "Accent"))
+
+```
+
+# Interesting findings
+
+* The goal of the final app will be prediction for short texts, perhaps to be used on a mobile phone.  Looking at the outliers, the data is not relevant.  For example, the longest articles in the blog data set is actually a log of the Fukushima power plant incidents.  Likewise the news data set has a long entry on stock prices.  These outliers will apply leverage on prediction because of their size.
+
+* The Twitter data set has a length that is relevant since they are typically under 250 characters. However there are a significant amount of abbreviations when compared against the news and blog sets.  The casual nature of the Twitter data appears to yield more spelling errors as well.
+
+* The preprocessing can taking a lot of computing time.  By generating a clean and tidy data set, this would avoid long load times for the app that we hope to build.
+
+
+#Plans for the prediction algorithm and Shiny app
+
+1. The next step in the research would be to investigate the speed and accuracy of predicting with trigrams, bigrams, and unigrams.  I suspect trigrams would yield the highest accuracy but what is the trade-off cost?
+
+2. The algorithm that I anticipate using would be to match the text for 2 ngrams.  If they match, then we would check 3 ngrams for the prediction.  If that doesn't exist, we will fall back on the first word to predict using 2 ngrams.  Highest frequency will determine the top prediction.
+
+* If there is enough time to experiment, I suspect we can build a much faster prediction system that has a data structure that maps out each word+previous word's possibilities in an ordered list - but this is probably out of scope for the course.
+
+3. The Shiny app would have a simple interface where predicive results would reactively appear as the user enters the text.  Speed would be critical.  The usage scenario would be fairly similar to how an user types text in a cell phone to deliver short messages.
+
