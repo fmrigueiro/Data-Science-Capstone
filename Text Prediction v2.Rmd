@@ -1,0 +1,418 @@
+---
+title: "Text Prediction"
+author: "Patrick Siu"
+date: "March 23, 2016"
+output: html_document
+---
+
+
+```{r library, echo = FALSE, message=FALSE, warning = FALSE}
+library(tm)
+library(DT)
+library(dplyr)
+library(stringi)
+library(stringr)
+library(RWeka)
+library(SnowballC)
+#library(wordcloud)
+#library(RColorBrewer)
+library(ggplot2)
+library(quanteda)
+library(data.table)
+#library(openNLP)
+
+options(scipen=999)
+
+
+    
+```
+
+#Introduction
+
+Created for the Coursera Data Science Specialization, this milestone report explains the latest exploratory analysis for the SwiftKey project - where the final deliverable will be an interactive app that will predict the next word in the sentence.
+
+The code has been suppressed to maintain readability of this document.  If you are interested in the underlying code, please visit this link:
+
+https://github.com/psiu/Data-Science-Capstone/
+
+
+
+```{r load_data, echo= FALSE}
+start_word_prediction <- readRDS("start_word_prediction.RDS")
+#freq1_dfm <- readRDS("freq1_dfm.RDS")
+freq2_with_stop <- readRDS("freq2_with_stop.RDS")
+#freq2_no_stop <- readRDS("freq2_no_stop.RDS")
+#freq3_with_stop <- readRDS("freq3_with_stop.RDS")
+freq3_with_stop <- readRDS("freq3_ultra.RDS")
+#freq3_no_stop <- readRDS("freq3_no_stop.RDS")
+#freq4_with_stop <- readRDS("freq4_with_stop.RDS")
+freq4_with_stop <- readRDS("freq4_ultra.RDS")
+#freq4_no_stop <- readRDS("freq4_no_stop.RDS")
+#freq5_with_stop <- readRDS("freq5_with_stop.RDS")
+
+
+
+
+```
+
+```{r predict, echo=FALSE}
+
+show_prediction <- function(v) {
+    print(v[1])
+    print(v[2])
+    print(v[3])
+}
+
+
+get_data <- function(ngrams, with_stop) {
+#     if(ngrams == 5) {
+#         if(with_stop == TRUE)
+#             return(freq5_with_stop)
+#         #else return(freq5_no_stop)
+#     }
+    if(ngrams == 4) {
+        if(with_stop == TRUE)
+            return(freq4_with_stop)
+        else return(freq4_no_stop)
+    }
+    else if(ngrams == 3) {
+        if(with_stop == TRUE)
+            return(freq3_with_stop)
+        else return(freq3_no_stop)
+    }
+    else if(ngrams == 2) {
+        if(with_stop == TRUE)
+            return(freq2_with_stop)
+        else return(freq2_no_stop)
+    }
+    else if(ngrams == 1) {
+        return(freq1_dfm)
+    }
+    
+}
+
+match_predict <- function(user_input, ngrams, with_stop) {
+    
+    data_tokens <- get_data(ngrams, with_stop)
+    
+    if(ngrams < 2) {
+        # Remove stopwords
+        input_no_stop <- gsub(x = user_input, pattern = paste0("\\b" ,stopwords("english"), "\\b", collapse = "|"), replacement = "")
+        input_no_stop[input_no_stop==""] <- NA
+        input_no_stop <- na.omit(input_no_stop)
+        
+        # Extract words that are likely to be associated
+        
+        ans <- tryCatch(
+                        similarity(freq1_dfm, margin = "features", n = 3, selection = input_no_stop[length(input_no_stop)]),
+                        error = function(err)(return(NA))
+                        )
+        if(is.na(ans))
+            return(NA)
+        #print(paste("freq1", names(ans[[1]])))
+        return(names(ans[[1]]))
+    }
+#     else if(ngrams > 4) { ###
+#         #exact match
+#         user_input_limit4 <- paste(user_input[length(user_input)-3], user_input[length(user_input)-2], user_input[length(user_input)-1], user_input[length(user_input)])
+#         data_tokens <- data_tokens %>% filter(variable == user_input_limit4)
+#         if(nrow(data_tokens) >= 3) {
+#             setorder(data_tokens, -percent)
+#             #print("freq5_with_stop")
+#             return(data_tokens$outcome[1:3])
+#         }
+# 
+#         # backoff to 4 grams
+#         return(match_predict(user_input, ngrams - 1, with_stop))
+#     }
+    else if(ngrams > 3) {  # Handle cases with longer than 3 words
+        #1 exact match
+        user_input_limit3 <- paste(user_input[length(user_input)-2], user_input[length(user_input)-1], user_input[length(user_input)])
+        data_tokens <- data_tokens %>% filter(variable == user_input_limit3)
+        if(nrow(data_tokens) >= 3) {
+            setorder(data_tokens, -percent)
+            #print("freq4_with_stop")
+            return(data_tokens$outcome[1:3])
+        }
+        #2 exact match without stopwords
+#         
+#         input_no_stop <- gsub(x = user_input, pattern = paste0("\\b" ,stopwords("english"), "\\b", collapse = "|"), replacement = "")
+#         input_no_stop[input_no_stop==""] <- NA
+#         input_no_stop <- na.omit(input_no_stop)
+#         
+#         if(length(input_no_stop) >= 3) {
+#             data_tokens <- get_data(ngrams, with_stop = FALSE)
+#             
+#             user_input_limit3_no_stop <- paste(input_no_stop[length(input_no_stop)-2], input_no_stop[length(input_no_stop)-1], input_no_stop[length(input_no_stop)])
+#             data_tokens <- data_tokens %>% filter(variable == user_input_limit3_no_stop)
+#             if(nrow(data_tokens) >= 3) {
+#                 setorder(data_tokens, -percent)
+#                 #print("freq4_no_stop")
+#                 return(data_tokens$outcome[1:3])
+#             }
+#         }
+        #3 backoff to 3 grams || (removed)using last 2 words
+        #user_input_limit2 <- paste(user_input[length(user_input)-1], user_input[length(user_input)])
+        return(match_predict(user_input, ngrams = 3, with_stop))
+    }
+    else {
+        if(ngrams == 3) {
+            user_input_limited <- paste(user_input[length(user_input)-1], user_input[length(user_input)])
+            test <- 3
+        }
+        else if (ngrams == 2) {
+            user_input_limited <- user_input[length(user_input)]
+            test <- 2
+        }
+        
+        data_tokens <- data_tokens %>% filter(variable == user_input_limited)
+        if(nrow(data_tokens) >= 3) {
+            #print(paste("freq", test, "with stop"))
+            setorder(data_tokens, -percent)
+            return(data_tokens$outcome[1:3])    
+        }
+        
+        data_tokens_no_stop <- get_data(ngrams, with_stop=FALSE)
+        data_tokens_no_stop <- data_tokens_no_stop %>% filter(variable == user_input_limited)
+        if(nrow(data_tokens_no_stop) >= 3){
+            #print(paste("freq", test, "no stop"))
+            setorder(data_tokens_no_stop, -percent)
+            return(data_tokens_no_stop$outcome[1:3])    
+        }
+        else if(nrow(data_tokens) == 2) {
+            ### Improvement:  FILL 1
+            #print(paste("freq", test, "with stop"))
+            return(data_tokens$outcome)
+            #return(match_predict(user_input, ngrams - 1, with_stop))
+        }
+        else if(nrow(data_tokens_no_stop) == 2) {
+            ### Improvement:  FILL 1
+            #print(paste("freq", test, "no stop"))
+            return(data_tokens_no_stop$outcome)
+            #return(match_predict(user_input, ngrams - 1, with_stop))
+        }
+        else if(nrow(data_tokens) == 1) {
+            ### Improvement:  FILL 2
+            #print(paste("freq", test, "with stop"))
+            return(data_tokens$outcome)
+            #return(match_predict(user_input, ngrams - 1, with_stop))
+        }
+        else if(nrow(data_tokens_no_stop) == 1) {
+            ### Improvement:  FILL 2
+            #print(paste("freq", test, "no stop"))
+            return(data_tokens_no_stop$outcome)
+            #return(match_predict(user_input, ngrams - 1, with_stop))
+        }
+        else if(nrow(data_tokens) == 0) {
+            return(match_predict(user_input, ngrams - 1, with_stop))
+        }
+
+
+    }
+    
+    return(NA) ## Error state
+}
+
+match_predict2 <- function(user_input, ngrams) {
+    
+############# Ngrams = 4    
+    if(ngrams > 3) {  # Handle cases with longer than 3 words
+        #1 exact match
+        user_input_limit3 <- paste(user_input[length(user_input)-2], user_input[length(user_input)-1], user_input[length(user_input)])
+        data_tokens <- freq4_with_stop %>% filter(variable == user_input_limit3)
+        if(nrow(data_tokens) >= 1) {
+            #already in order:  setorder(data_tokens, -percent)
+            #print("freq4_with_stop")
+            return(data_tokens$outcome[1:3])
+        }
+        #3 backoff to 3 grams 
+        return(match_predict2(user_input, ngrams - 1))
+    }
+
+############# Ngrams = 3
+    
+    if(ngrams == 3) {
+            user_input_limited <- paste(user_input[length(user_input)-1], user_input[length(user_input)])
+            data_tokens <- freq3_with_stop %>% filter(variable == user_input_limited)
+        if(nrow(data_tokens) >= 1) {
+            #already in order:  setorder(data_tokens, -percent)
+            #print("freq3_with_stop")
+            return(data_tokens$outcome[1:3])
+        }
+        #Backoff
+        return(match_predict2(user_input, ngrams - 1))
+    }
+        
+############# Ngram = 2
+    
+    if(ngrams < 3) {
+            user_input_limited <- user_input[length(user_input)]
+            data_tokens <- freq2_with_stop %>% filter(variable == user_input_limited)
+        #if(nrow(data_tokens) >= 1) {
+            #already in order setorder(data_tokens, -percent)
+            #print("freq2_with_stop")
+            return(data_tokens$outcome[1:3])
+        #}
+        #Backoff
+        #return(match_predict(user_input, ngrams - 1))
+    }
+    
+############# Ngram = 1  (Eliminated for speed considerations)
+    
+#     if(ngrams < 2) {
+#         # Remove stopwords
+#         input_no_stop <- gsub(x = user_input, pattern = paste0("\\b" ,stopwords("english"), "\\b", collapse = "|"), replacement = "")
+#         input_no_stop[input_no_stop==""] <- NA
+#         input_no_stop <- na.omit(input_no_stop)
+#         
+#         # Extract words that are likely to be associated
+#         
+#         ans <- tryCatch(
+#                         similarity(freq1_dfm, margin = "features", n = 3, selection = input_no_stop[length(input_no_stop)]),
+#                         error = function(err)(return(NA))
+#                         )
+#         if(is.na(ans))
+#             return(NA)
+#         #print(paste("freq1", names(ans[[1]])))
+#         return(names(ans[[1]]))
+#     }
+
+    return(NA) ## Error state
+}
+
+```
+
+```{r input, echo=FALSE}
+
+clean_input <- function(input) {
+    if(input == "" | is.na(input))
+        return("")
+    input <- tolower(input)
+    input <- gsub("[0-9](?:st|nd|rd|th)", "", input, ignore.case=F, perl=T) #remove ordinal numbers
+    input <- gsub("[.\\-!]", " ", input, ignore.case=F, perl=T) #remove punctuation
+    input <- gsub("[^\\p{L}'\\s]+", "", input, ignore.case=F, perl=T) #remove punctuation, leaving '
+    input <- gsub("^\\s+|\\s+$", "", input) #trim leading and trailing whitespace
+    input <- stripWhitespace(input)
+    if(input == "" | is.na(input))
+        return("")
+    input <- unlist(strsplit(input, " "))
+    
+    return(input)
+}
+
+
+main <- function(input, word = 0) {
+    
+    #print(input)    #for debugging
+    input <- clean_input(input)
+    
+    if(input[1] == "") {
+        output <- start_word_prediction
+    }
+            
+    else if(length(input) == 1) {
+        output <- match_predict(input, ngrams = 2, with_stop = T)  #exact scenaro match to predict 2nd word
+    }
+    
+    else if(length(input) == 2) {
+        output <- match_predict(input, ngrams = 3, with_stop = T)
+    }
+        
+    else if(length(input) > 2) {
+        output <- match_predict(input, ngrams = 4, with_stop = T)
+    }
+#     else if(length(input) > 3) {
+#         output <- match_predict(input, ngrams = 5, with_stop = T)
+#     }
+    
+    if (word == 0)
+            return(output)
+        else if (word == 1)
+            return(output[1])
+        else if (word == 2)
+            return(output[2])
+        else if (word == 3)
+            return(output[3])
+}
+
+main2 <- function(input, word = 0) {
+    
+    #print(input)    #for debugging
+    input <- clean_input(input)
+    
+    if(input[1] == "") {
+        output <- start_word_prediction
+    }
+            
+    else if(length(input) == 1) {
+        output <- match_predict2(input, ngrams = 2)  #exact scenaro match to predict 2nd word
+    }
+    
+    else if(length(input) == 2) {
+        output <- match_predict2(input, ngrams = 3)
+    }
+        
+    else if(length(input) > 2) {
+        output <- match_predict2(input, ngrams = 4)
+    }
+
+    
+    if (word == 0)
+            return(output)
+        else if (word == 1)
+            return(output[1])
+        else if (word == 2)
+            return(output[2])
+        else if (word == 3)
+            return(output[3])
+}
+
+
+#Example manual run
+#show_prediction(main(input))
+
+
+validation <- readRDS("validation.RDS")
+
+wrapper1 <- function(x) {
+    return(main2(x, 1))
+}
+wrapper2 <- function(x) {
+    return(main2(x, 2))
+}
+wrapper3 <- function(x) {
+    return(main2(x, 3))
+}
+
+ptm <- proc.time()
+validation$predict <- sapply(validation$variable, wrapper1, USE.NAMES = F)
+proc.time() - ptm
+validation$predict2 <- sapply(validation$variable, wrapper2, USE.NAMES = F)
+validation$predict3 <- sapply(validation$variable, wrapper3, USE.NAMES = F)
+
+validation$correct <- ifelse(validation$outcome == validation$predict | validation$outcome == validation$predict2 | validation$outcome == validation$predict3, 1, 0)
+validation[is.na(validation$correct), "correct"] <- 0
+accuracy <- sum(validation$correct) / nrow(validation)
+
+round(accuracy * 100, 2)
+
+#Performance log
+
+#First measurement:  10.1%
+#Trimmed validation file leading whitespace and ordinal numbers:  11.53%
+#Updated training files to remove leading whitespace and ordinal numbers:  11.54%
+#100k training file took 71.9 min freq4_no_stop, compared to 23.6 min for 30k. Prediction for 10k increased to 35.56 mins compared to 11.38 min
+#100k training, accuracy: 16.72%
+#Fixed ' and modified data cleaning to use regex.  Dropping training set back to 30k. Prediction improved to 10.8 min.  Accuracy: 11.62%, 0.08% increase from last equivalent training size
+#Fixed bug in prediction where freq3_no_stop and freq2_no_stop wasn't used.  Accuracy remains at 11.62%. Guessing that no stop is actually rarely used.
+#Removed freq4_no_stop with no impact to accuracy
+#Freq5_with_stop added, accuracy remains unchanged at 11.62%
+#Added "-" and removed freq5, accuracy: 11.42%   9.7 mins.  Decreased accuracy
+#300k training file took 162 min (2.7 hr), accuracy: 17.36%
+#Modified to remove punctuation differently, 30k training, accuracy: 11.84%
+#Removed blog data since final grading will work off twitter and news, accuracy: 13.85%
+#400k took 153 min using twitter and news. Prediction 71 min. Accuracy:  21.11%
+#Modified match_predict and main functions to version 2. Removed "no stop" files and freq1 DTM prediction. Prediction: 62 min.  Accuracy with one word: 14.69%.  Midflight used constrain_top_three and chopped token, n, and percent columns. Prediction speed improved to 45 mins.  Accuracy: 20.94%  Small drop in accuracy.
+#800k training file took 197 min (3.28 hr) using upgraded 16GB MacBook Pro.  Created "ultra" slim versions by eliminating single occurrences in the data file.  Prediction time 19.3 min.  25.07% Accuracy!!
+
+```

@@ -1,0 +1,319 @@
+---
+title: "Data Prep Script"
+author: "Patrick Siu"
+date: "April 17, 2016"
+output: html_document
+---
+
+```{r libraries, echo = FALSE}
+### Data Prep Script
+
+library(tm)
+library(dplyr)
+library(stringi)
+library(stringr)
+library(RWeka)
+library(SnowballC)
+library(quanteda)
+library(data.table)
+
+#############################
+## Constants and controls
+rawDataFile <- "Coursera-SwiftKey.zip"
+downloadURL <- "https://d396qusza40orc.cloudfront.net/dsscapstone/dataset/Coursera-SwiftKey.zip"
+
+bypass_loadRawData <- FALSE
+
+#############################
+## Helper functions
+
+loadRawData <- function() {
+    ## If raw data file does ont exist, download the data file
+    if(!file.exists(rawDataFile)){
+        download.file(downloadURL, rawDataFile)
+    }
+}
+
+#Returns the number of characters in the longest line
+longest_line_nchars <- function(df) {
+    ans <- max(nchar(df))
+    return(ans)
+}
+
+#Returns the average number of characters
+avg_nchars <- function(df) {
+    ans <- mean(nchar(df))
+    return( round(ans) )
+}
+
+###########################
+```
+
+
+```{r load_raw, echo=FALSE, cache = T}
+if(!bypass_loadRawData) {
+    loadRawData()  
+    
+    # Raw file is 548 MB
+    unzip(rawDataFile)
+}
+
+
+blog_file <- "final/en_US/en_US.blogs.txt"
+news_file <- "final/en_US/en_US.news.txt"
+twitter_file <- "final/en_US/en_US.twitter.txt"
+
+#blog_data <- readLines(blog_file, skipNul = TRUE, encoding = "UTF-8") #UTF-8 helps with reading special characters which would show up as "â€\u009d" otherwise
+news_data <- readLines(news_file, skipNul = TRUE, encoding = "UTF-8")
+twitter_data <- readLines(twitter_file, skipNul = TRUE, encoding = "UTF-8")
+
+
+
+# Data Cleaning - Notes
+
+#We can see from the initial exploratory analysis that there are some outliers with extremely long articles.  When examining those outliers, we have observations such as a log of events from the Fukushima nuclear reactor incident and a log of stock prices.  Likewise, outliers on the short side are also unlikely occurences.  Neither of these extremes relate well to the type of text that we want to predict.  For this reason **we will limit the data sets to the 1st and 3rd quartile**.
+
+remove_outliers <- function(data) {
+    first <- quantile(nchar(data), .25)
+    third <- quantile(nchar(data), .75)
+    data <- data[nchar(data) < third]
+    data <- data[nchar(data) > first]
+    return(data)
+}
+
+#blog_data <- remove_outliers(blog_data)
+news_data <- remove_outliers(news_data)
+twitter_data <- remove_outliers(twitter_data)
+
+#Merge to one file
+#big_corpus <- c(blog_data, news_data, twitter_data) #1.6M obs, 262 MB
+#Removed Blog data file - project grading is done on news and twitter
+big_corpus <- c(news_data, twitter_data)
+
+#Memory efficiency
+#remove(blog_data)
+remove(news_data)
+remove(twitter_data)
+```
+
+
+```{r data1, echo= FALSE, cache=T}
+####################Commented code for training vs test data sets
+#60% Training set size
+# p <- 0.6
+# training_sample_size <- round(length(big_corpus) * p)
+
+##CONSIDER SCRUBBING ORDINAL NUMBERS TO IMPROVE ACCURACY
+training_sample_size <- 800000
+validation_sample_size <- 10000
+
+set.seed(113)  # Reproducibility
+inTrain <- sample(1:length(big_corpus), training_sample_size, replace=FALSE)
+
+training <- big_corpus[inTrain]
+validation <- big_corpus[-inTrain]
+
+set.seed(113)
+valid_sample <- sample(1:length(validation), validation_sample_size, replace=FALSE)
+validation <- validation[valid_sample]
+#length(training)
+#length(testing)
+
+big_corpus <- training
+
+#Remove special characters
+scrub_special_char <- function(x) iconv(x, to="ASCII", sub="?")
+big_corpus <- scrub_special_char(big_corpus)
+    big_corpus <- tolower(big_corpus)
+    big_corpus <- gsub("[0-9](?:st|nd|rd|th)", "", big_corpus, ignore.case=F, perl=T) #remove ordinal numbers
+    big_corpus <- gsub("[.\\-!]", " ", big_corpus, ignore.case=F, perl=T) #remove punctuation
+    big_corpus <- gsub("[^\\p{L}'\\s]+", "", big_corpus, ignore.case=F, perl=T) #remove punctuation, leaving '
+    big_corpus <- gsub("^\\s+|\\s+$", "", big_corpus) #trim leading and trailing whitespace
+    big_corpus <- stripWhitespace(big_corpus)
+validation <- scrub_special_char(validation)
+    validation <- tolower(validation)
+    validation <- gsub("[0-9](?:st|nd|rd|th)", "", validation, ignore.case=F, perl=T) #remove ordinal numbers
+    validation <- gsub("[.\\-!]", " ", validation, ignore.case=F, perl=T) #remove punctuation
+    validation <- gsub("[^\\p{L}'\\s]+", "", validation, ignore.case=F, perl=T) #remove punctuation, leaving '
+    validation <- gsub("^\\s+|\\s+$", "", validation) #trim leading and trailing whitespace
+    validation <- stripWhitespace(validation)
+    
+
+validation <- as.data.frame(validation)
+colnames(validation) <- "token"
+validation$token <- as.character(validation$token)
+validation$outcome <- word(validation$token, -1)
+#validation$outcome <- clean_input(validation$outcome)
+validation$variable <- word(string = validation$token, start = 1, end = -2, sep = fixed(" "))
+#validation$variable <- clean_input(validation$variable)
+
+saveRDS(validation, "validation.RDS")
+
+big_corpus <- corpus(big_corpus)
+```
+
+```{r data2, echo=FALSE}
+
+#**We will clean the data by removing punctuation and removing profanity**.  Ideally, spelling correction and removing non-English words would be helpful, but out-of-scope for this phase of the milestone report.  For the most part, spelling errors and non-English words appear to be edge cases when considering the top ngrams only.
+#**The stemwords were left alone because they are possible candidates for next word prediction.**
+    
+#Profanity file for match for text cleaning
+profanity <- readLines("profanity.txt")
+
+constrain_top_three <- function(corpus) {
+    first <- !duplicated(corpus$variable)
+    balance <- corpus[!first,]
+    first <- corpus[first,]
+    second <- !duplicated(balance$variable)
+    balance2 <- balance[!second,]
+    second <- balance[second,]
+    third <- !duplicated(balance2$variable)
+    third <- balance2[third,]
+    
+    return(rbind(first, second, third))
+    
+}
+
+# Helper function to generate a token frequency dataframe
+token_frequency <- function(corpus, n = 1, rem_stopw = NULL) {
+    corpus <- dfm(corpus,
+                  #toLower = TRUE,
+                  #removeNumbers = TRUE,
+                  #removePunct = TRUE,
+                  removeTwitter = TRUE,
+                  ignoredFeatures = c(profanity, rem_stopw),
+                  removeSeparators = TRUE,
+                  ngrams = n)
+    corpus <- colSums(corpus)
+    total <- sum(corpus)
+    corpus <- data.frame(names(corpus),
+                         corpus,
+                         row.names = NULL,
+                         check.rows = FALSE,
+                         check.names = FALSE,
+                         stringsAsFactors = FALSE
+    )
+    colnames(corpus) <- c("token", "n")
+    corpus <- mutate(corpus, token = gsub("_", " ", token))  #Strip out _ for easy matching
+    corpus <- mutate(corpus, percent = corpus$n / total)
+    if(n > 1) {
+        corpus$outcome <- word(corpus$token, -1)
+        corpus$variable <- word(string = corpus$token, start = 1, end = n-1, sep = fixed(" "))
+    }
+    setorder(corpus, -n)
+    
+    corpus <- constrain_top_three(corpus)
+    # corpus$token <- NULL
+    # corpus$n <- NULL
+    # corpus$percent <- NULL
+    
+    return(corpus)
+}
+
+start_word <- word(big_corpus$documents$texts, 1)  # Grabs first word for each observation
+start_word <- token_frequency(start_word, n = 1, NULL)  #Determines the most popular start words
+start_word_prediction <- start_word$token[1:3]  #Select top 3 words for start word prediction
+
+saveRDS(start_word_prediction, "start_word_prediction.rds")
+```
+
+```{r dataf1, echo=FALSE}
+
+freq1_dfm <- dfm(big_corpus,
+                 #toLower = TRUE,
+                 #removeNumbers = TRUE,
+                 #removePunct = TRUE,
+                 removeTwitter = TRUE,
+                 ignoredFeatures = c(profanity, stopwords("english")),
+                 removeSeparators = TRUE,
+                 ngrams = 1)
+
+saveRDS(freq1_dfm, "freq1_dfm.RDS")
+remove(freq1_dfm)
+```
+
+freq2_with_stop
+
+```{r dataf2s, echo= FALSE, eval=T}
+#ptm <- proc.time()
+freq2_with_stop <- token_frequency(big_corpus, n = 2, NULL)
+saveRDS(freq2_with_stop, "freq2_with_stop.RDS")
+remove(freq2_with_stop)
+#proc.time() - ptm
+
+```
+
+freq2_no_stop
+
+```{r dataf2, echo= FALSE, eval=FALSE}
+#ptm <- proc.time()
+freq2_no_stop <- token_frequency(big_corpus, n = 2, stopwords("english"))
+saveRDS(freq2_no_stop, "freq2_no_stop.RDS")
+remove(freq2_no_stop)
+#proc.time() - ptm
+```
+
+freq3_with_stop
+
+```{r dataf3s, echo= FALSE, eval=T}
+#ptm <- proc.time()
+freq3_with_stop <- token_frequency(big_corpus, n = 3, NULL)
+saveRDS(freq3_with_stop, "freq3_with_stop.RDS")
+freq3_with_stop <- freq3_with_stop %>% filter(n > 1)
+freq3_with_stop$token <- NULL
+freq3_with_stop$n <- NULL
+freq3_with_stop$percent <- NULL
+saveRDS(freq3_with_stop, "freq3_ultra.RDS")
+remove(freq3_with_stop)
+#proc.time() - ptm
+```
+
+freq3_no_stop
+
+```{r dataf3, echo= FALSE, eval=FALSE}
+#ptm <- proc.time()
+freq3_no_stop <- token_frequency(big_corpus, n = 3, stopwords("english"))
+saveRDS(freq3_no_stop, "freq3_no_stop.RDS")
+remove(freq3_no_stop)
+#proc.time() - ptm
+```
+
+freq4_with_stop
+
+```{r dataf4s, echo= FALSE, eval=T}
+#ptm <- proc.time()
+freq4_with_stop <- token_frequency(big_corpus, n = 4, NULL)
+saveRDS(freq4_with_stop, "freq4_with_stop.RDS")
+freq4_with_stop <- freq4_with_stop %>% filter(n > 1)
+freq4_with_stop$token <- NULL
+freq4_with_stop$n <- NULL
+freq4_with_stop$percent <- NULL
+saveRDS(freq4_with_stop, "freq4_ultra.RDS")
+remove(freq4_with_stop)
+#proc.time() - ptm
+```
+
+freq4_no_stop
+
+```{r dataf4, echo= FALSE, eval=FALSE}
+#ptm <- proc.time()
+freq4_no_stop <- token_frequency(big_corpus, n = 4, stopwords("english"))
+saveRDS(freq4_no_stop, "freq4_no_stop.RDS")
+remove(freq4_no_stop)
+#proc.time() - ptm
+
+#Improvement - detect sentence end and put a marker there
+
+
+```
+
+freq5_with_stop
+
+```{r dataf5s, echo= FALSE, eval=FALSE}
+#ptm <- proc.time()
+freq5_with_stop <- token_frequency(big_corpus, n = 5, NULL)
+saveRDS(freq5_with_stop, "freq5_with_stop.RDS")
+remove(freq5_with_stop)
+#proc.time() - ptm
+
+```
