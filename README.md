@@ -10,7 +10,9 @@ Created for the Coursera Data Science Specialization, this project folder contai
   
 2. The Shiny App for Text Prediction
 
-  * https://psiu.shinyapps.io/text/
+  * App:  https://psiu.shinyapps.io/text/
+  
+  * Pitch deck:  http://rpubs.com/psiu/text
 
 ***Project Goal / Problem to solve:***
 When using mobile devices, the capability of having a text prediction can help the user type words faster with greater accuracy. Two key metrics for this capability to be successful will involve accuracy and prediction speed.  With this challenge in mind, we have set out to build a fast and accurate prediction app that will predict the next word in a given sentence.
