@@ -2,6 +2,8 @@
 library(shiny)
 library(shinythemes)
 library(dplyr)
+require(markdown)
+library(tm)
 
 
 shinyUI(navbarPage("Coursera Data Science Capstone - Text Prediction",
